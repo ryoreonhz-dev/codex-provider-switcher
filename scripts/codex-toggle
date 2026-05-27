@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+
+ACTIVE_CONFIG="$CODEX_HOME/config.toml"
+OPENAI_CONFIG="$CODEX_HOME/config.openai.toml"
+DEEPSEEK_CONFIG="$CODEX_HOME/config.deepseek.toml"
+PREVIOUS_CONFIG="$CODEX_HOME/config.previous.toml"
+
+MOON_BRIDGE_DIR="${MOON_BRIDGE_DIR:-$HOME/Documents/ai_tools/moon-bridge}"
+MOON_BRIDGE_CONFIG="$MOON_BRIDGE_DIR/config.yml"
+MOON_BRIDGE_HOST="${MOON_BRIDGE_HOST:-127.0.0.1}"
+MOON_BRIDGE_PORT="${MOON_BRIDGE_PORT:-38440}"
+MOON_BRIDGE_URL="http://$MOON_BRIDGE_HOST:$MOON_BRIDGE_PORT/v1/models"
+
+LOG_DIR="$CODEX_HOME/logs"
+MOON_BRIDGE_LOG="$LOG_DIR/moonbridge.log"
+MOON_BRIDGE_PID_FILE="$CODEX_HOME/moonbridge.pid"
+
+CODEX_APP_NAME="${CODEX_APP_NAME:-Codex}"
+
+mkdir -p "$CODEX_HOME" "$LOG_DIR"
+
+is_deepseek_config() {
+  grep -q '127.0.0.1:38440\|model_provider = "moonbridge"' "$ACTIVE_CONFIG" 2>/dev/null
+}
+
+is_moonbridge_running() {
+  curl -s --max-time 1 "$MOON_BRIDGE_URL" >/dev/null 2>&1
+}
+
+find_moonbridge_pids() {
+  pgrep -f "go run ./cmd/moonbridge --config config.yml|moonbridge --config config.yml" || true
+}
+
+restart_codex_app() {
+  echo "Restarting Codex App..."
+
+  if osascript -e "id of app \"$CODEX_APP_NAME\"" >/dev/null 2>&1; then
+    osascript -e "quit app \"$CODEX_APP_NAME\"" >/dev/null 2>&1 || true
+
+    for _ in {1..20}; do
+      if ! pgrep -x "$CODEX_APP_NAME" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.5
+    done
+
+    if pgrep -x "$CODEX_APP_NAME" >/dev/null 2>&1; then
+      echo "Codex App did not quit gracefully; forcing quit..."
+      pkill -x "$CODEX_APP_NAME" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+
+    open -a "$CODEX_APP_NAME"
+    echo "Codex App restarted."
+  else
+    echo "Could not find app named \"$CODEX_APP_NAME\"."
+    echo "Config has been switched, but please restart Codex App manually."
+  fi
+}
+
+start_moonbridge() {
+  if is_moonbridge_running; then
+    echo "Moon Bridge is already running."
+    return 0
+  fi
+
+  if [[ ! -d "$MOON_BRIDGE_DIR" ]]; then
+    echo "Moon Bridge directory not found: $MOON_BRIDGE_DIR"
+    exit 1
+  fi
+
+  if [[ ! -f "$MOON_BRIDGE_CONFIG" ]]; then
+    echo "Moon Bridge config not found: $MOON_BRIDGE_CONFIG"
+    exit 1
+  fi
+
+  echo "Starting Moon Bridge..."
+
+  cd "$MOON_BRIDGE_DIR"
+  nohup go run ./cmd/moonbridge --config config.yml > "$MOON_BRIDGE_LOG" 2>&1 &
+  echo $! > "$MOON_BRIDGE_PID_FILE"
+
+  for _ in {1..20}; do
+    if is_moonbridge_running; then
+      echo "Moon Bridge started successfully."
+      echo "Log: $MOON_BRIDGE_LOG"
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  echo "Moon Bridge failed to start within 10 seconds."
+  echo "Check log: $MOON_BRIDGE_LOG"
+  exit 1
+}
+
+stop_moonbridge() {
+  if ! is_moonbridge_running; then
+    echo "Moon Bridge is not running."
+    rm -f "$MOON_BRIDGE_PID_FILE"
+    return 0
+  fi
+
+  echo "Stopping Moon Bridge..."
+
+  if [[ -f "$MOON_BRIDGE_PID_FILE" ]]; then
+    PID="$(cat "$MOON_BRIDGE_PID_FILE" || true)"
+    if [[ -n "${PID:-}" ]] && kill -0 "$PID" 2>/dev/null; then
+      kill "$PID" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+
+  PIDS="$(find_moonbridge_pids)"
+  if [[ -n "$PIDS" ]]; then
+    echo "$PIDS" | xargs kill 2>/dev/null || true
+    sleep 1
+  fi
+
+  if is_moonbridge_running; then
+    echo "Moon Bridge is still running; forcing stop..."
+    PIDS="$(find_moonbridge_pids)"
+    if [[ -n "$PIDS" ]]; then
+      echo "$PIDS" | xargs kill -9 2>/dev/null || true
+    fi
+  fi
+
+  rm -f "$MOON_BRIDGE_PID_FILE"
+
+  if is_moonbridge_running; then
+    echo "Failed to stop Moon Bridge. Please check port $MOON_BRIDGE_PORT manually."
+    exit 1
+  fi
+
+  echo "Moon Bridge stopped."
+}
+
+switch_to_openai() {
+  if [[ ! -f "$OPENAI_CONFIG" ]]; then
+    echo "Missing OpenAI config: $OPENAI_CONFIG"
+    exit 1
+  fi
+
+  cp "$ACTIVE_CONFIG" "$PREVIOUS_CONFIG" 2>/dev/null || true
+  cp "$OPENAI_CONFIG" "$ACTIVE_CONFIG"
+
+  echo "Switched Codex to OpenAI / GPT config."
+}
+
+switch_to_deepseek() {
+  local target_model="${1:-moonbridge}"
+
+  if [[ ! -f "$DEEPSEEK_CONFIG" ]]; then
+    echo "Missing DeepSeek config: $DEEPSEEK_CONFIG"
+    exit 1
+  fi
+
+  cp "$ACTIVE_CONFIG" "$PREVIOUS_CONFIG" 2>/dev/null || true
+  cp "$DEEPSEEK_CONFIG" "$ACTIVE_CONFIG"
+  perl -0pi -e "s/^model = \".*\"$/model = \"$target_model\"/m" "$ACTIVE_CONFIG"
+
+  echo "Switched Codex to DeepSeek / Moon Bridge config."
+  echo "DeepSeek model: $target_model"
+}
+
+status() {
+  echo "Codex config:"
+  if is_deepseek_config; then
+    echo "  Current model path: DeepSeek / Moon Bridge"
+  else
+    echo "  Current model path: OpenAI / GPT"
+  fi
+
+  echo
+  echo "Moon Bridge:"
+  if is_moonbridge_running; then
+    echo "  Status: running"
+    curl -s --max-time 1 "$MOON_BRIDGE_URL" | head -c 300
+    echo
+  else
+    echo "  Status: stopped"
+  fi
+
+  echo
+  echo "Codex App:"
+  if pgrep -x "$CODEX_APP_NAME" >/dev/null 2>&1; then
+    echo "  Status: running"
+  else
+    echo "  Status: stopped"
+  fi
+
+  echo
+  echo "Active config key lines:"
+  grep -nE 'model = |model_provider|base_url|wire_api|model_catalog_json' "$ACTIVE_CONFIG" 2>/dev/null || true
+}
+
+doctor() {
+  echo "Codex Toggle Doctor"
+  echo
+
+  echo "Config files:"
+  for file in "$ACTIVE_CONFIG" "$OPENAI_CONFIG" "$DEEPSEEK_CONFIG"; do
+    if [[ -f "$file" ]]; then
+      echo "  OK  $file"
+    else
+      echo "  MISSING  $file"
+    fi
+  done
+
+  echo
+  echo "Moon Bridge:"
+  [[ -d "$MOON_BRIDGE_DIR" ]] && echo "  OK  dir: $MOON_BRIDGE_DIR" || echo "  MISSING dir: $MOON_BRIDGE_DIR"
+  [[ -f "$MOON_BRIDGE_CONFIG" ]] && echo "  OK  config: $MOON_BRIDGE_CONFIG" || echo "  MISSING config: $MOON_BRIDGE_CONFIG"
+
+  if is_moonbridge_running; then
+    echo "  OK  running at $MOON_BRIDGE_URL"
+  else
+    echo "  STOPPED  $MOON_BRIDGE_URL"
+  fi
+
+  echo
+  echo "DeepSeek API key:"
+  if grep -q 'api_key: *"sk-' "$MOON_BRIDGE_CONFIG" 2>/dev/null; then
+    echo "  OK  api_key appears configured"
+  else
+    echo "  CHECK  api_key not detected or not using sk-* format"
+  fi
+
+  echo
+  echo "Codex App:"
+  if osascript -e "id of app \"$CODEX_APP_NAME\"" >/dev/null 2>&1; then
+    echo "  OK  app: $CODEX_APP_NAME"
+  else
+    echo "  MISSING app: $CODEX_APP_NAME"
+  fi
+
+  echo
+  status
+}
+
+show_logs() {
+  if [[ ! -f "$MOON_BRIDGE_LOG" ]]; then
+    echo "Moon Bridge log not found: $MOON_BRIDGE_LOG"
+    exit 1
+  fi
+
+  tail -n "${1:-80}" "$MOON_BRIDGE_LOG"
+}
+
+sync_deepseek_config() {
+  if ! is_deepseek_config; then
+    echo "Current active config is not DeepSeek / Moon Bridge. Refusing to overwrite $DEEPSEEK_CONFIG."
+    exit 1
+  fi
+
+  cp "$DEEPSEEK_CONFIG" "$DEEPSEEK_CONFIG.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+  cp "$ACTIVE_CONFIG" "$DEEPSEEK_CONFIG"
+
+  echo "Synced active DeepSeek config to:"
+  echo "$DEEPSEEK_CONFIG"
+}
+
+toggle() {
+  if is_deepseek_config; then
+    echo "Current state: DeepSeek / Moon Bridge"
+    stop_moonbridge
+    switch_to_openai
+    restart_codex_app
+  else
+    echo "Current state: OpenAI / GPT"
+    start_moonbridge
+    switch_to_deepseek "moonbridge"
+    restart_codex_app
+  fi
+}
+
+case "${1:-toggle}" in
+  toggle)
+    toggle
+    ;;
+  status)
+    status
+    ;;
+  doctor)
+    doctor
+    ;;
+  logs)
+    show_logs "${2:-80}"
+    ;;
+  sync-deepseek)
+    sync_deepseek_config
+    ;;
+  openai)
+    stop_moonbridge
+    switch_to_openai
+    restart_codex_app
+    ;;
+  deepseek)
+    start_moonbridge
+    switch_to_deepseek "moonbridge"
+    restart_codex_app
+    ;;
+  deepseek-pro)
+    start_moonbridge
+    switch_to_deepseek "deepseek-v4-pro"
+    restart_codex_app
+    ;;
+  deepseek-flash)
+    start_moonbridge
+    switch_to_deepseek "deepseek-v4-flash"
+    restart_codex_app
+    ;;
+  start)
+    start_moonbridge
+    ;;
+  stop)
+    stop_moonbridge
+    ;;
+  restart-app)
+    restart_codex_app
+    ;;
+  *)
+    echo "Usage: codex-toggle [toggle|status|doctor|logs [n]|sync-deepseek|openai|deepseek|deepseek-pro|deepseek-flash|start|stop|restart-app]"
+    exit 1
+    ;;
+esac
