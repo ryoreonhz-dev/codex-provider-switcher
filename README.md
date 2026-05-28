@@ -1,5 +1,7 @@
 # codex-provider-switcher
 
+英文 | [Chinese simplified](README.zh-CN.md)
+
 A small local operations script for switching Codex Desktop App / Codex CLI between the default OpenAI provider and a Moon Bridge based DeepSeek provider.
 
 > This is not an official OpenAI or DeepSeek project. It only switches local Codex configuration files and manages a local Moon Bridge process.
