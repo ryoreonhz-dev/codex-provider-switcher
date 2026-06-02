@@ -72,9 +72,28 @@ has_yq() {
   command -v yq >/dev/null 2>&1
 }
 
+yq_version() {
+  yq --version 2>/dev/null || true
+}
+
+has_yq_v4() {
+  local version
+
+  has_yq || return 1
+  version="$(yq_version)"
+  [[ "$version" == *"mikefarah/yq"* && "$version" == *"version v4."* ]]
+}
+
 require_registry_parser() {
   if has_custom_registry && ! has_yq; then
     echo "Custom provider registry requires yq v4: $PROVIDER_REGISTRY"
+    echo "Install it with: brew install yq"
+    exit 1
+  fi
+
+  if has_custom_registry && ! has_yq_v4; then
+    echo "Custom provider registry requires mikefarah/yq v4: $PROVIDER_REGISTRY"
+    echo "Detected yq: $(yq_version)"
     echo "Install it with: brew install yq"
     exit 1
   fi
@@ -92,7 +111,7 @@ registry_parseable() {
     return 0
   fi
 
-  has_yq && yq e '.providers and .models' "$PROVIDER_REGISTRY" >/dev/null 2>&1
+  has_yq_v4 && yq e '.providers and .models' "$PROVIDER_REGISTRY" >/dev/null 2>&1
 }
 
 yq_get_provider_field() {
@@ -254,6 +273,11 @@ find_moonbridge_pids() {
 
 restart_codex_app() {
   echo "Restarting Codex App..."
+
+  if [[ "${CODEX_TOGGLE_SKIP_APP_RESTART:-}" == "1" ]]; then
+    echo "Skipped Codex App restart because CODEX_TOGGLE_SKIP_APP_RESTART=1."
+    return 0
+  fi
 
   if osascript -e "id of app \"$CODEX_APP_NAME\"" >/dev/null 2>&1; then
     osascript -e "quit app \"$CODEX_APP_NAME\"" >/dev/null 2>&1 || true
@@ -421,7 +445,7 @@ set_active_model() {
   fi
 
   if grep -q '^model = ' "$ACTIVE_CONFIG" 2>/dev/null; then
-    perl -0pi -e "s/^model = \".*\"$/model = \"$model\"/m" "$ACTIVE_CONFIG"
+    MODEL="$model" perl -0pi -e 's/^model = ".*"$/model = "$ENV{MODEL}"/m' "$ACTIVE_CONFIG"
   else
     printf 'model = "%s"\n' "$model" >> "$ACTIVE_CONFIG"
   fi
@@ -488,6 +512,7 @@ switch_to_deepseek() {
 current_registry_provider() {
   local active_provider
   local base_url
+  local provider_key
 
   active_provider="$(read_active_config_value "model_provider")"
   base_url="$(read_active_config_value "base_url")"
@@ -495,7 +520,17 @@ current_registry_provider() {
   if [[ "$active_provider" == "moonbridge" || "$base_url" == "$MOON_BRIDGE_BASE_URL" ]]; then
     echo "moonbridge"
   elif [[ -n "$active_provider" ]]; then
-    echo "$active_provider"
+    if has_custom_registry && registry_parseable; then
+      provider_key="$(CODEX_PROVIDER="$active_provider" yq -r '
+        .providers
+        | to_entries[]
+        | select(.key == strenv(CODEX_PROVIDER) or (.value.codex_provider // "") == strenv(CODEX_PROVIDER))
+        | .key
+      ' "$PROVIDER_REGISTRY" | head -n 1)"
+      echo "${provider_key:-$active_provider}"
+    else
+      echo "$active_provider"
+    fi
   else
     echo "openai"
   fi
@@ -509,7 +544,7 @@ current_registry_model_key() {
     return 0
   fi
 
-  if has_custom_registry && has_yq; then
+  if has_custom_registry && has_yq_v4; then
     MODEL="$active_model" yq -r '
       .models
       | to_entries[]
@@ -519,6 +554,27 @@ current_registry_model_key() {
   else
     default_resolve_model_key "$active_model"
   fi
+}
+
+active_config_matches_provider() {
+  local provider="$1"
+  local codex_provider
+  local active_provider
+
+  if [[ "$provider" == "moonbridge" ]]; then
+    is_moonbridge_config
+    return
+  fi
+
+  codex_provider="$(provider_field "$provider" "codex_provider")"
+  active_provider="$(read_active_config_value "model_provider")"
+
+  if [[ -n "$codex_provider" ]]; then
+    [[ "$active_provider" == "$codex_provider" ]]
+    return
+  fi
+
+  [[ "$(current_registry_provider)" == "$provider" ]]
 }
 
 status() {
@@ -589,21 +645,29 @@ doctor() {
   echo "Provider registry:"
   if has_custom_registry; then
     echo "  OK  file: $PROVIDER_REGISTRY"
-    if has_yq; then
-      echo "  OK  yq: $(yq --version 2>/dev/null | head -n 1)"
+    if has_yq_v4; then
+      echo "  OK  yq: $(yq_version | head -n 1)"
       if yq e '.providers and .models' "$PROVIDER_REGISTRY" >/dev/null 2>&1; then
         echo "  OK  schema: providers and models detected"
       else
         echo "  CHECK  schema: expected top-level providers and models"
       fi
+    elif has_yq; then
+      echo "  WRONG  yq is installed, but not mikefarah/yq v4"
+      echo "  Detected: $(yq_version | head -n 1)"
+      echo "  Install with: brew install yq"
     else
       echo "  MISSING  yq v4"
       echo "  Install with: brew install yq"
     fi
   else
     echo "  OK  using built-in defaults"
-    if has_yq; then
-      echo "  OK  yq: $(yq --version 2>/dev/null | head -n 1)"
+    if has_yq_v4; then
+      echo "  OK  yq: $(yq_version | head -n 1)"
+    elif has_yq; then
+      echo "  CHECK  yq is installed but not mikefarah/yq v4; needed only for custom registry YAML"
+      echo "  Detected: $(yq_version | head -n 1)"
+      echo "  Install with: brew install yq"
     else
       echo "  CHECK  yq not installed; needed only for custom registry YAML"
       echo "  Install with: brew install yq"
@@ -620,7 +684,7 @@ doctor() {
     fi
   done
 
-  if has_custom_registry && has_yq; then
+  if has_custom_registry && has_yq_v4; then
     echo
     echo "Provider config files:"
     while IFS=$'\t' read -r provider config; do
@@ -683,8 +747,8 @@ sync_provider_config() {
   provider="$(resolve_provider "$1")"
   target_config="$(provider_config_path "$provider")"
 
-  if [[ "$provider" == "moonbridge" ]] && ! is_moonbridge_config; then
-    echo "Current active config is not Moon Bridge. Refusing to overwrite $target_config."
+  if ! active_config_matches_provider "$provider"; then
+    echo "Current active config does not appear to match provider '$provider'. Refusing to overwrite $target_config."
     exit 1
   fi
 
@@ -722,6 +786,7 @@ init_config() {
     exit 1
   fi
 
+  mkdir -p "$(dirname "$PROVIDER_REGISTRY")"
   default_registry > "$PROVIDER_REGISTRY"
   echo "Created provider registry:"
   echo "$PROVIDER_REGISTRY"
