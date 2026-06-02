@@ -7,12 +7,14 @@ ACTIVE_CONFIG="$CODEX_HOME/config.toml"
 OPENAI_CONFIG="$CODEX_HOME/config.openai.toml"
 DEEPSEEK_CONFIG="$CODEX_HOME/config.deepseek.toml"
 PREVIOUS_CONFIG="$CODEX_HOME/config.previous.toml"
+PROVIDER_REGISTRY="${CODEX_PROVIDER_CONFIG:-$CODEX_HOME/codex-providers.yml}"
 
 MOON_BRIDGE_DIR="${MOON_BRIDGE_DIR:-$HOME/Documents/ai_tools/moon-bridge}"
 MOON_BRIDGE_CONFIG="$MOON_BRIDGE_DIR/config.yml"
 MOON_BRIDGE_HOST="${MOON_BRIDGE_HOST:-127.0.0.1}"
 MOON_BRIDGE_PORT="${MOON_BRIDGE_PORT:-38440}"
-MOON_BRIDGE_URL="http://$MOON_BRIDGE_HOST:$MOON_BRIDGE_PORT/v1/models"
+MOON_BRIDGE_BASE_URL="http://$MOON_BRIDGE_HOST:$MOON_BRIDGE_PORT/v1"
+MOON_BRIDGE_URL="$MOON_BRIDGE_BASE_URL/models"
 
 LOG_DIR="$CODEX_HOME/logs"
 MOON_BRIDGE_LOG="$LOG_DIR/moonbridge.log"
@@ -22,8 +24,224 @@ CODEX_APP_NAME="${CODEX_APP_NAME:-Codex}"
 
 mkdir -p "$CODEX_HOME" "$LOG_DIR"
 
-is_deepseek_config() {
-  grep -q '127.0.0.1:38440\|model_provider = "moonbridge"' "$ACTIVE_CONFIG" 2>/dev/null
+usage() {
+  echo "Usage: codex-toggle [toggle|status|doctor|list|init-config|use <model-or-alias>|provider <provider>|sync <provider>|logs [n]|sync-deepseek|openai|deepseek|deepseek-pro|deepseek-flash|start [service]|stop [service]|restart-app]"
+}
+
+default_registry() {
+  cat <<EOF
+providers:
+  openai:
+    label: "OpenAI / GPT"
+    config: "config.openai.toml"
+    codex_provider: ""
+    service: ""
+
+  moonbridge:
+    label: "Moon Bridge"
+    config: "config.deepseek.toml"
+    codex_provider: "moonbridge"
+    service: "moonbridge"
+
+models:
+  deepseek-v4-pro:
+    label: "DeepSeek V4 Pro"
+    provider: "moonbridge"
+    model: "deepseek-v4-pro"
+    aliases: ["deepseek-pro"]
+
+  deepseek-v4-flash:
+    label: "DeepSeek V4 Flash"
+    provider: "moonbridge"
+    model: "deepseek-v4-flash"
+    aliases: ["deepseek-flash"]
+
+  moonbridge:
+    label: "Moon Bridge Default"
+    provider: "moonbridge"
+    model: "moonbridge"
+    aliases: ["deepseek"]
+EOF
+}
+
+has_custom_registry() {
+  [[ -f "$PROVIDER_REGISTRY" ]]
+}
+
+has_yq() {
+  command -v yq >/dev/null 2>&1
+}
+
+require_registry_parser() {
+  if has_custom_registry && ! has_yq; then
+    echo "Custom provider registry requires yq v4: $PROVIDER_REGISTRY"
+    echo "Install it with: brew install yq"
+    exit 1
+  fi
+}
+
+validate_registry() {
+  if has_custom_registry; then
+    require_registry_parser
+    yq e '.providers and .models' "$PROVIDER_REGISTRY" >/dev/null
+  fi
+}
+
+registry_parseable() {
+  if ! has_custom_registry; then
+    return 0
+  fi
+
+  has_yq && yq e '.providers and .models' "$PROVIDER_REGISTRY" >/dev/null 2>&1
+}
+
+yq_get_provider_field() {
+  local provider="$1"
+  local field="$2"
+  PROVIDER="$provider" FIELD="$field" yq -r '.providers[strenv(PROVIDER)][strenv(FIELD)] // ""' "$PROVIDER_REGISTRY"
+}
+
+yq_get_model_field() {
+  local model_key="$1"
+  local field="$2"
+  MODEL_KEY="$model_key" FIELD="$field" yq -r '.models[strenv(MODEL_KEY)][strenv(FIELD)] // ""' "$PROVIDER_REGISTRY"
+}
+
+yq_resolve_model_key() {
+  local target="$1"
+  TARGET="$target" yq -r '
+    .models
+    | to_entries[]
+    | select(.key == strenv(TARGET) or ((.value.aliases // []) | index(strenv(TARGET))))
+    | .key
+  ' "$PROVIDER_REGISTRY" | head -n 1
+}
+
+default_provider_field() {
+  local provider="$1"
+  local field="$2"
+
+  case "$provider:$field" in
+    openai:label) echo "OpenAI / GPT" ;;
+    openai:config) echo "config.openai.toml" ;;
+    openai:codex_provider) echo "" ;;
+    openai:service) echo "" ;;
+    moonbridge:label) echo "Moon Bridge" ;;
+    moonbridge:config) echo "config.deepseek.toml" ;;
+    moonbridge:codex_provider) echo "moonbridge" ;;
+    moonbridge:service) echo "moonbridge" ;;
+    *) echo "" ;;
+  esac
+}
+
+default_resolve_model_key() {
+  case "$1" in
+    deepseek-v4-pro|deepseek-pro) echo "deepseek-v4-pro" ;;
+    deepseek-v4-flash|deepseek-flash) echo "deepseek-v4-flash" ;;
+    moonbridge|deepseek) echo "moonbridge" ;;
+    *) echo "" ;;
+  esac
+}
+
+default_model_field() {
+  local model_key="$1"
+  local field="$2"
+
+  case "$model_key:$field" in
+    deepseek-v4-pro:label) echo "DeepSeek V4 Pro" ;;
+    deepseek-v4-pro:provider) echo "moonbridge" ;;
+    deepseek-v4-pro:model) echo "deepseek-v4-pro" ;;
+    deepseek-v4-pro:aliases) echo "deepseek-pro" ;;
+    deepseek-v4-flash:label) echo "DeepSeek V4 Flash" ;;
+    deepseek-v4-flash:provider) echo "moonbridge" ;;
+    deepseek-v4-flash:model) echo "deepseek-v4-flash" ;;
+    deepseek-v4-flash:aliases) echo "deepseek-flash" ;;
+    moonbridge:label) echo "Moon Bridge Default" ;;
+    moonbridge:provider) echo "moonbridge" ;;
+    moonbridge:model) echo "moonbridge" ;;
+    moonbridge:aliases) echo "deepseek" ;;
+    *) echo "" ;;
+  esac
+}
+
+provider_field() {
+  local provider="$1"
+  local field="$2"
+
+  if has_custom_registry; then
+    require_registry_parser
+    yq_get_provider_field "$provider" "$field"
+  else
+    default_provider_field "$provider" "$field"
+  fi
+}
+
+resolve_provider() {
+  local provider="$1"
+
+  if [[ -z "$(provider_field "$provider" "config")" ]]; then
+    echo "Unknown provider: $provider" >&2
+    exit 1
+  fi
+
+  echo "$provider"
+}
+
+resolve_model_or_alias() {
+  local target="$1"
+  local model_key
+
+  if has_custom_registry; then
+    require_registry_parser
+    model_key="$(yq_resolve_model_key "$target")"
+  else
+    model_key="$(default_resolve_model_key "$target")"
+  fi
+
+  if [[ -z "$model_key" ]]; then
+    echo "Unknown model or alias: $target" >&2
+    exit 1
+  fi
+
+  echo "$model_key"
+}
+
+model_field() {
+  local model_key="$1"
+  local field="$2"
+
+  if has_custom_registry; then
+    require_registry_parser
+    yq_get_model_field "$model_key" "$field"
+  else
+    default_model_field "$model_key" "$field"
+  fi
+}
+
+provider_config_path() {
+  local provider="$1"
+  local config
+
+  config="$(provider_field "$provider" "config")"
+  if [[ -z "$config" ]]; then
+    echo "Provider config is not configured for: $provider" >&2
+    exit 1
+  fi
+
+  if [[ "$config" = /* ]]; then
+    echo "$config"
+  else
+    echo "$CODEX_HOME/$config"
+  fi
+}
+
+read_active_config_value() {
+  local key="$1"
+  grep -E "^$key = " "$ACTIVE_CONFIG" 2>/dev/null | head -n 1 | sed -E 's/^[^=]+=[[:space:]]*"?//; s/"?[[:space:]]*$//' || true
+}
+
+is_moonbridge_config() {
+  grep -q "$MOON_BRIDGE_BASE_URL\\|model_provider = \"moonbridge\"" "$ACTIVE_CONFIG" 2>/dev/null
 }
 
 is_moonbridge_running() {
@@ -138,40 +356,207 @@ stop_moonbridge() {
   echo "Moon Bridge stopped."
 }
 
-switch_to_openai() {
-  if [[ ! -f "$OPENAI_CONFIG" ]]; then
-    echo "Missing OpenAI config: $OPENAI_CONFIG"
+start_service() {
+  case "${1:-moonbridge}" in
+    ""|moonbridge)
+      start_moonbridge
+      ;;
+    *)
+      echo "Unsupported service: $1"
+      exit 1
+      ;;
+  esac
+}
+
+stop_service() {
+  case "${1:-moonbridge}" in
+    ""|moonbridge)
+      stop_moonbridge
+      ;;
+    *)
+      echo "Unsupported service: $1"
+      exit 1
+      ;;
+  esac
+}
+
+start_provider_service() {
+  local provider="$1"
+  local service
+
+  service="$(provider_field "$provider" "service")"
+  if [[ -n "$service" ]]; then
+    start_service "$service"
+  fi
+}
+
+ensure_provider_config() {
+  local provider="$1"
+  local source_config
+
+  source_config="$(provider_config_path "$provider")"
+  if [[ ! -f "$source_config" ]]; then
+    echo "Missing provider config for $provider: $source_config" >&2
     exit 1
   fi
 
-  cp "$ACTIVE_CONFIG" "$PREVIOUS_CONFIG" 2>/dev/null || true
-  cp "$OPENAI_CONFIG" "$ACTIVE_CONFIG"
+  echo "$source_config"
+}
 
-  echo "Switched Codex to OpenAI / GPT config."
+copy_provider_config() {
+  local provider="$1"
+  local source_config
+
+  source_config="$(ensure_provider_config "$provider")"
+
+  cp "$ACTIVE_CONFIG" "$PREVIOUS_CONFIG" 2>/dev/null || true
+  cp "$source_config" "$ACTIVE_CONFIG"
+}
+
+set_active_model() {
+  local model="$1"
+
+  if [[ -z "$model" ]]; then
+    return 0
+  fi
+
+  if grep -q '^model = ' "$ACTIVE_CONFIG" 2>/dev/null; then
+    perl -0pi -e "s/^model = \".*\"$/model = \"$model\"/m" "$ACTIVE_CONFIG"
+  else
+    printf 'model = "%s"\n' "$model" >> "$ACTIVE_CONFIG"
+  fi
+}
+
+switch_to_provider() {
+  local provider
+  local label
+
+  provider="$(resolve_provider "$1")"
+  label="$(provider_field "$provider" "label")"
+
+  ensure_provider_config "$provider" >/dev/null
+  start_provider_service "$provider"
+  copy_provider_config "$provider"
+
+  echo "Switched Codex provider to ${label:-$provider}."
+}
+
+switch_to_model() {
+  local target="$1"
+  local model_key
+  local provider
+  local model
+  local label
+
+  model_key="$(resolve_model_or_alias "$target")"
+  provider="$(model_field "$model_key" "provider")"
+  model="$(model_field "$model_key" "model")"
+  label="$(model_field "$model_key" "label")"
+
+  if [[ -z "$provider" ]]; then
+    echo "Model has no provider configured: $model_key"
+    exit 1
+  fi
+
+  ensure_provider_config "$provider" >/dev/null
+  start_provider_service "$provider"
+  copy_provider_config "$provider"
+  set_active_model "$model"
+
+  echo "Switched Codex to ${label:-$model_key}."
+  echo "Provider: $provider"
+  echo "Model: ${model:-unchanged}"
+}
+
+switch_to_openai() {
+  local provider="openai"
+  local label
+
+  resolve_provider "$provider" >/dev/null
+  label="$(provider_field "$provider" "label")"
+  ensure_provider_config "$provider" >/dev/null
+  stop_moonbridge
+  copy_provider_config "$provider"
+
+  echo "Switched Codex provider to ${label:-$provider}."
 }
 
 switch_to_deepseek() {
-  local target_model="${1:-moonbridge}"
+  switch_to_model "${1:-moonbridge}"
+}
 
-  if [[ ! -f "$DEEPSEEK_CONFIG" ]]; then
-    echo "Missing DeepSeek config: $DEEPSEEK_CONFIG"
-    exit 1
+current_registry_provider() {
+  local active_provider
+  local base_url
+
+  active_provider="$(read_active_config_value "model_provider")"
+  base_url="$(read_active_config_value "base_url")"
+
+  if [[ "$active_provider" == "moonbridge" || "$base_url" == "$MOON_BRIDGE_BASE_URL" ]]; then
+    echo "moonbridge"
+  elif [[ -n "$active_provider" ]]; then
+    echo "$active_provider"
+  else
+    echo "openai"
+  fi
+}
+
+current_registry_model_key() {
+  local active_model="$1"
+
+  if [[ -z "$active_model" ]]; then
+    echo ""
+    return 0
   fi
 
-  cp "$ACTIVE_CONFIG" "$PREVIOUS_CONFIG" 2>/dev/null || true
-  cp "$DEEPSEEK_CONFIG" "$ACTIVE_CONFIG"
-  perl -0pi -e "s/^model = \".*\"$/model = \"$target_model\"/m" "$ACTIVE_CONFIG"
-
-  echo "Switched Codex to DeepSeek / Moon Bridge config."
-  echo "DeepSeek model: $target_model"
+  if has_custom_registry && has_yq; then
+    MODEL="$active_model" yq -r '
+      .models
+      | to_entries[]
+      | select(.key == strenv(MODEL) or .value.model == strenv(MODEL))
+      | .key
+    ' "$PROVIDER_REGISTRY" | head -n 1
+  else
+    default_resolve_model_key "$active_model"
+  fi
 }
 
 status() {
+  local active_model
+  local active_provider
+  local provider_label
+  local model_key
+  local model_label
+
+  active_model="$(read_active_config_value "model")"
+  active_provider="$(current_registry_provider)"
+  provider_label=""
+  model_key=""
+  if registry_parseable; then
+    provider_label="$(provider_field "$active_provider" "label" 2>/dev/null || true)"
+    model_key="$(current_registry_model_key "$active_model")"
+  fi
+  model_label=""
+  if [[ -n "$model_key" ]]; then
+    model_label="$(model_field "$model_key" "label" 2>/dev/null || true)"
+  fi
+
   echo "Codex config:"
-  if is_deepseek_config; then
-    echo "  Current model path: DeepSeek / Moon Bridge"
+  echo "  Current provider: ${provider_label:-$active_provider}"
+  echo "  Current model: ${active_model:-unknown}"
+  if [[ -n "$model_label" ]]; then
+    echo "  Registry model: $model_label ($model_key)"
+  fi
+
+  if has_custom_registry; then
+    echo "  Registry: $PROVIDER_REGISTRY"
+    if ! has_yq; then
+      echo "  Registry status: not parsed because yq is missing"
+    elif ! registry_parseable; then
+      echo "  Registry status: not parsed because YAML validation failed"
+    fi
   else
-    echo "  Current model path: OpenAI / GPT"
+    echo "  Registry: built-in defaults"
   fi
 
   echo
@@ -201,6 +586,31 @@ doctor() {
   echo "Codex Toggle Doctor"
   echo
 
+  echo "Provider registry:"
+  if has_custom_registry; then
+    echo "  OK  file: $PROVIDER_REGISTRY"
+    if has_yq; then
+      echo "  OK  yq: $(yq --version 2>/dev/null | head -n 1)"
+      if yq e '.providers and .models' "$PROVIDER_REGISTRY" >/dev/null 2>&1; then
+        echo "  OK  schema: providers and models detected"
+      else
+        echo "  CHECK  schema: expected top-level providers and models"
+      fi
+    else
+      echo "  MISSING  yq v4"
+      echo "  Install with: brew install yq"
+    fi
+  else
+    echo "  OK  using built-in defaults"
+    if has_yq; then
+      echo "  OK  yq: $(yq --version 2>/dev/null | head -n 1)"
+    else
+      echo "  CHECK  yq not installed; needed only for custom registry YAML"
+      echo "  Install with: brew install yq"
+    fi
+  fi
+
+  echo
   echo "Config files:"
   for file in "$ACTIVE_CONFIG" "$OPENAI_CONFIG" "$DEEPSEEK_CONFIG"; do
     if [[ -f "$file" ]]; then
@@ -209,6 +619,22 @@ doctor() {
       echo "  MISSING  $file"
     fi
   done
+
+  if has_custom_registry && has_yq; then
+    echo
+    echo "Provider config files:"
+    while IFS=$'\t' read -r provider config; do
+      [[ -z "$provider" ]] && continue
+      if [[ "$config" != /* ]]; then
+        config="$CODEX_HOME/$config"
+      fi
+      if [[ -f "$config" ]]; then
+        echo "  OK  $provider: $config"
+      else
+        echo "  MISSING  $provider: $config"
+      fi
+    done < <(yq -r '.providers | to_entries[] | [.key, (.value.config // "")] | @tsv' "$PROVIDER_REGISTRY")
+  fi
 
   echo
   echo "Moon Bridge:"
@@ -250,29 +676,65 @@ show_logs() {
   tail -n "${1:-80}" "$MOON_BRIDGE_LOG"
 }
 
-sync_deepseek_config() {
-  if ! is_deepseek_config; then
-    echo "Current active config is not DeepSeek / Moon Bridge. Refusing to overwrite $DEEPSEEK_CONFIG."
+sync_provider_config() {
+  local provider
+  local target_config
+
+  provider="$(resolve_provider "$1")"
+  target_config="$(provider_config_path "$provider")"
+
+  if [[ "$provider" == "moonbridge" ]] && ! is_moonbridge_config; then
+    echo "Current active config is not Moon Bridge. Refusing to overwrite $target_config."
     exit 1
   fi
 
-  cp "$DEEPSEEK_CONFIG" "$DEEPSEEK_CONFIG.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
-  cp "$ACTIVE_CONFIG" "$DEEPSEEK_CONFIG"
+  cp "$target_config" "$target_config.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+  cp "$ACTIVE_CONFIG" "$target_config"
 
-  echo "Synced active DeepSeek config to:"
-  echo "$DEEPSEEK_CONFIG"
+  echo "Synced active config to:"
+  echo "$target_config"
+}
+
+list_registry() {
+  echo "Providers:"
+  if has_custom_registry; then
+    require_registry_parser
+    yq -r '.providers | to_entries[] | "  \(.key)\t\(.value.label // "")\tconfig=\(.value.config // "")\tservice=\(.value.service // "")"' "$PROVIDER_REGISTRY"
+  else
+    echo "  openai	OpenAI / GPT	config=config.openai.toml	service="
+    echo "  moonbridge	Moon Bridge	config=config.deepseek.toml	service=moonbridge"
+  fi
+
+  echo
+  echo "Models:"
+  if has_custom_registry; then
+    yq -r '.models | to_entries[] | "  \(.key)\tprovider=\(.value.provider // "")\tmodel=\(.value.model // "")\taliases=\((.value.aliases // []) | join(","))"' "$PROVIDER_REGISTRY"
+  else
+    echo "  deepseek-v4-pro	provider=moonbridge	model=deepseek-v4-pro	aliases=deepseek-pro"
+    echo "  deepseek-v4-flash	provider=moonbridge	model=deepseek-v4-flash	aliases=deepseek-flash"
+    echo "  moonbridge	provider=moonbridge	model=moonbridge	aliases=deepseek"
+  fi
+}
+
+init_config() {
+  if [[ -f "$PROVIDER_REGISTRY" ]]; then
+    echo "Provider registry already exists: $PROVIDER_REGISTRY"
+    exit 1
+  fi
+
+  default_registry > "$PROVIDER_REGISTRY"
+  echo "Created provider registry:"
+  echo "$PROVIDER_REGISTRY"
 }
 
 toggle() {
-  if is_deepseek_config; then
-    echo "Current state: DeepSeek / Moon Bridge"
-    stop_moonbridge
+  if is_moonbridge_config; then
+    echo "Current state: Moon Bridge"
     switch_to_openai
     restart_codex_app
   else
     echo "Current state: OpenAI / GPT"
-    start_moonbridge
-    switch_to_deepseek "moonbridge"
+    switch_to_model "deepseek"
     restart_codex_app
   fi
 }
@@ -287,43 +749,71 @@ case "${1:-toggle}" in
   doctor)
     doctor
     ;;
+  list)
+    list_registry
+    ;;
+  init-config)
+    init_config
+    ;;
+  use)
+    if [[ -z "${2:-}" ]]; then
+      echo "Missing model or alias."
+      usage
+      exit 1
+    fi
+    switch_to_model "$2"
+    restart_codex_app
+    ;;
+  provider)
+    if [[ -z "${2:-}" ]]; then
+      echo "Missing provider."
+      usage
+      exit 1
+    fi
+    switch_to_provider "$2"
+    restart_codex_app
+    ;;
+  sync)
+    if [[ -z "${2:-}" ]]; then
+      echo "Missing provider."
+      usage
+      exit 1
+    fi
+    sync_provider_config "$2"
+    ;;
   logs)
     show_logs "${2:-80}"
     ;;
   sync-deepseek)
-    sync_deepseek_config
+    sync_provider_config "moonbridge"
     ;;
   openai)
-    stop_moonbridge
     switch_to_openai
     restart_codex_app
     ;;
   deepseek)
-    start_moonbridge
-    switch_to_deepseek "moonbridge"
+    switch_to_deepseek "deepseek"
     restart_codex_app
     ;;
   deepseek-pro)
-    start_moonbridge
-    switch_to_deepseek "deepseek-v4-pro"
+    switch_to_deepseek "deepseek-pro"
     restart_codex_app
     ;;
   deepseek-flash)
-    start_moonbridge
-    switch_to_deepseek "deepseek-v4-flash"
+    switch_to_deepseek "deepseek-flash"
     restart_codex_app
     ;;
   start)
-    start_moonbridge
+    start_service "${2:-moonbridge}"
     ;;
   stop)
-    stop_moonbridge
+    stop_service "${2:-moonbridge}"
     ;;
   restart-app)
     restart_codex_app
     ;;
   *)
-    echo "Usage: codex-toggle [toggle|status|doctor|logs [n]|sync-deepseek|openai|deepseek|deepseek-pro|deepseek-flash|start|stop|restart-app]"
+    usage
     exit 1
     ;;
 esac

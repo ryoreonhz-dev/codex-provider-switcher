@@ -2,25 +2,27 @@
 
 英文 | [Chinese simplified](README.zh-CN.md)
 
-A small local operations script for switching Codex Desktop App / Codex CLI between the default OpenAI provider and a Moon Bridge based DeepSeek provider.
+A small local operations script for switching Codex Desktop App / Codex CLI between the default OpenAI provider and configurable third-party providers/models. The built-in default supports DeepSeek through Moon Bridge.
 
-> This is not an official OpenAI or DeepSeek project. It only switches local Codex configuration files and manages a local Moon Bridge process.
+> This is not an official OpenAI, DeepSeek, or Moon Bridge project. It only switches local Codex configuration files and manages local helper processes such as Moon Bridge.
 
 ## Why
 
-Codex users may want to keep OpenAI models as the primary path and use DeepSeek as a fallback when quota, cost, or availability becomes a constraint. Manual switching is error-prone because it usually involves editing `~/.codex/config.toml`, starting or stopping Moon Bridge, and restarting Codex Desktop App.
+Codex users may want to keep OpenAI models as the primary path and use third-party models as fallbacks when quota, cost, or availability becomes a constraint. Manual switching is error-prone because it usually involves editing `~/.codex/config.toml`, starting or stopping helper services such as Moon Bridge, and restarting Codex Desktop App.
 
 `codex-toggle` automates that workflow.
 
 ## Features
 
 - Switch Codex back to OpenAI / GPT.
-- Switch Codex to DeepSeek through Moon Bridge.
+- Switch Codex to third-party models through a local provider registry.
+- Built-in DeepSeek through Moon Bridge defaults when no registry file exists.
 - Explicitly select `deepseek-v4-pro` or `deepseek-v4-flash`.
+- Add more providers/models by editing `~/.codex/codex-providers.yml`.
 - Start and stop Moon Bridge automatically.
 - Restart Codex Desktop App after config changes.
 - Provide `status`, `doctor`, and `logs` commands for troubleshooting.
-- Sync the currently validated DeepSeek config back to `~/.codex/config.deepseek.toml`.
+- Sync the currently validated provider config back to its baseline file.
 
 ## Architecture
 
@@ -33,6 +35,12 @@ Codex Desktop App / Codex CLI
 
 OpenAI mode uses the normal Codex config. DeepSeek mode uses a custom provider named `moonbridge`.
 
+Additional third-party providers/models can be registered in:
+
+```text
+~/.codex/codex-providers.yml
+```
+
 ## Requirements
 
 - macOS
@@ -41,6 +49,7 @@ OpenAI mode uses the normal Codex config. DeepSeek mode uses a custom provider n
 - Go 1.25+
 - Moon Bridge cloned locally
 - DeepSeek API key
+- `yq` v4 when using a custom provider registry
 
 Default expected Moon Bridge location:
 
@@ -52,6 +61,12 @@ You can override it with:
 
 ```bash
 export MOON_BRIDGE_DIR="/path/to/moon-bridge"
+```
+
+Install `yq` if you want to use `~/.codex/codex-providers.yml`:
+
+```bash
+brew install yq
 ```
 
 ## Installation
@@ -73,11 +88,12 @@ source ~/.zshrc
 
 ## Prepare Config Files
 
-You need two baseline Codex configs:
+You need baseline Codex configs:
 
 ```text
 ~/.codex/config.openai.toml
 ~/.codex/config.deepseek.toml
+~/.codex/codex-providers.yml
 ```
 
 `config.openai.toml` should be your normal OpenAI / GPT Codex configuration.
@@ -95,19 +111,40 @@ base_url = "http://127.0.0.1:38440/v1"
 wire_api = "responses"
 ```
 
+`codex-providers.yml` is optional. If it does not exist, `codex-toggle` uses built-in defaults for OpenAI, Moon Bridge, `deepseek-v4-pro`, and `deepseek-v4-flash`.
+
+Create an editable registry from the built-in defaults:
+
+```bash
+codex-toggle init-config
+```
+
+You can also start from:
+
+```text
+examples/codex-providers.example.yml
+```
+
 ## Commands
 
 ```bash
 codex-toggle status
 codex-toggle doctor
+codex-toggle list
+codex-toggle init-config
+codex-toggle use deepseek-pro
+codex-toggle provider openai
 codex-toggle openai
 codex-toggle deepseek
 codex-toggle deepseek-pro
 codex-toggle deepseek-flash
 codex-toggle logs 50
 codex-toggle sync-deepseek
+codex-toggle sync moonbridge
 codex-toggle start
+codex-toggle start moonbridge
 codex-toggle stop
+codex-toggle stop moonbridge
 codex-toggle restart-app
 ```
 
@@ -129,6 +166,19 @@ Use DeepSeek Pro for heavier reasoning or long-context coding tasks:
 
 ```bash
 codex-toggle deepseek-pro
+```
+
+Or use the generic model/alias command:
+
+```bash
+codex-toggle use deepseek-flash
+codex-toggle use deepseek-v4-pro
+```
+
+List configured providers and models:
+
+```bash
+codex-toggle list
 ```
 
 Check actual routing:

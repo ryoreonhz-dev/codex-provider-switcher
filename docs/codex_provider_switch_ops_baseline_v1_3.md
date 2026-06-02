@@ -1,8 +1,8 @@
-# Codex Provider Switch Operations Baseline v1.2
+# Codex Provider Switch Operations Baseline v1.3
 
 ## Purpose
 
-This baseline defines a local operations workflow for switching Codex Desktop App / Codex CLI between OpenAI and DeepSeek through Moon Bridge.
+This baseline defines a local operations workflow for switching Codex Desktop App / Codex CLI between OpenAI and configurable third-party providers/models. The built-in default path supports DeepSeek through Moon Bridge.
 
 ## Standard Files
 
@@ -11,6 +11,7 @@ This baseline defines a local operations workflow for switching Codex Desktop Ap
 ~/.codex/config.openai.toml
 ~/.codex/config.deepseek.toml
 ~/.codex/config.previous.toml
+~/.codex/codex-providers.yml
 ~/.codex/models_catalog.json
 ~/.codex/logs/moonbridge.log
 ~/.codex/moonbridge.pid
@@ -31,19 +32,32 @@ DeepSeek mode:
 Codex -> Moon Bridge -> DeepSeek API
 ```
 
+Custom registry mode:
+
+```text
+Codex -> ~/.codex/codex-providers.yml -> provider baseline config -> optional local service
+```
+
 ## Command Baseline
 
 ```bash
 codex-toggle status
 codex-toggle doctor
+codex-toggle list
+codex-toggle init-config
+codex-toggle use <model-or-alias>
+codex-toggle provider <provider>
 codex-toggle openai
 codex-toggle deepseek
 codex-toggle deepseek-pro
 codex-toggle deepseek-flash
 codex-toggle logs 50
 codex-toggle sync-deepseek
+codex-toggle sync <provider>
 codex-toggle start
+codex-toggle start moonbridge
 codex-toggle stop
+codex-toggle stop moonbridge
 codex-toggle restart-app
 ```
 
@@ -59,18 +73,26 @@ Use DeepSeek Flash as low-cost fallback:
 
 ```bash
 codex-toggle deepseek-flash
+codex-toggle use deepseek-flash
 ```
 
 Use DeepSeek Pro for heavier tasks:
 
 ```bash
 codex-toggle deepseek-pro
+codex-toggle use deepseek-v4-pro
 ```
 
 Verify status:
 
 ```bash
 codex-toggle status
+```
+
+List configured providers and models:
+
+```bash
+codex-toggle list
 ```
 
 Verify actual routing:
@@ -102,6 +124,7 @@ When the current DeepSeek active config has been verified and should become the 
 
 ```bash
 codex-toggle sync-deepseek
+codex-toggle sync moonbridge
 ```
 
 This updates:
@@ -157,6 +180,13 @@ codex-toggle start
 ```
 
 ## Change Record
+
+### v1.3
+
+- Added provider/model registry support through `~/.codex/codex-providers.yml`.
+- Added `list`, `init-config`, `use`, `provider`, and generic `sync` commands.
+- Kept DeepSeek Pro / Flash and `sync-deepseek` compatibility commands.
+- Added `yq` v4 requirement for custom registry parsing.
 
 ### v1.2
 

@@ -2,23 +2,23 @@
 
 简体中文 | [English](README.md)
 
-> Codex Desktop App / Codex CLI 的 OpenAI 与 Moon Bridge / DeepSeek Provider 一键切换工具。
+> Codex Desktop App / Codex CLI 的 OpenAI 与第三方 Provider / Model 一键切换工具，内置默认支持 Moon Bridge / DeepSeek。
 
-`codex-provider-switcher` 是一个本地运维脚本项目，用于在 OpenAI 官方模型和基于 Moon Bridge 的 DeepSeek 第三方模型通道之间快速切换。
+`codex-provider-switcher` 是一个本地运维脚本项目，用于在 OpenAI 官方模型和可配置的第三方模型通道之间快速切换。默认情况下，它仍然支持基于 Moon Bridge 的 DeepSeek 通道。
 
 它适合这样的使用场景：
 
 - 平时使用 OpenAI / GPT 作为 Codex 主模型通道
-- 当 Codex 额度、成本或可用性受限时，临时切换到 DeepSeek
+- 当 Codex 额度、成本或可用性受限时，临时切换到 DeepSeek 或其他第三方模型
 - 使用 Codex Desktop App 为主，同时希望保留 Codex CLI 兼容性
 - 希望通过一个命令完成配置切换、Moon Bridge 启停、Codex App 重启和状态检查
 
-> 本项目不是 OpenAI 官方项目，也不是 DeepSeek 官方项目。它只负责切换本地 Codex 配置文件，并管理本地 Moon Bridge 进程。
+> 本项目不是 OpenAI 官方项目，也不是 DeepSeek / Moon Bridge 官方项目。它只负责切换本地 Codex 配置文件，并管理本地辅助进程，例如 Moon Bridge。
 
 ## 背景
 
 Codex 支持通过 `~/.codex/config.toml` 配置自定义 model provider。  
-通过 Moon Bridge，可以将 Codex 的请求转发到 DeepSeek API。
+通过 Moon Bridge，可以将 Codex 的请求转发到 DeepSeek API；通过 `~/.codex/codex-providers.yml`，也可以继续注册更多 provider / model。
 
 典型链路如下：
 
@@ -31,19 +31,21 @@ Codex Desktop App / Codex CLI
 
 手动切换配置时，通常需要反复编辑 `config.toml`、启动或关闭 Moon Bridge、重启 Codex App，并检查日志确认实际模型是否正确。这个过程容易出错。
 
-`codex-toggle` 的目标就是把这些操作固化成一个命令。
+`codex-toggle` 的目标就是把这些操作固化成一个命令，并允许后续通过本地 YAML 扩展更多第三方模型。
 
 ## 功能
 
-- 在 OpenAI / GPT 与 DeepSeek / Moon Bridge provider 之间切换
+- 在 OpenAI / GPT 与第三方 provider/model 之间切换
+- 没有自定义 YAML 时，内置 DeepSeek / Moon Bridge 默认配置
 - 支持 DeepSeek Pro / Flash 显式切换
+- 支持通过 `~/.codex/codex-providers.yml` 注册更多 provider / model
 - 自动启动 Moon Bridge
 - 自动关闭 Moon Bridge
 - 自动重启 Codex Desktop App
 - 查看当前模型 provider 状态
 - 查看 Moon Bridge 日志
 - 执行本地环境体检
-- 将当前可用 DeepSeek 配置同步回基线配置文件
+- 将当前可用 provider 配置同步回基线配置文件
 
 ## 前置条件
 
@@ -53,6 +55,7 @@ Codex Desktop App / Codex CLI
 - Codex Desktop App
 - Codex CLI
 - Go
+- yq v4（使用自定义 provider registry 时需要）
 - Moon Bridge
 - DeepSeek API Key
 - 已经生成可用的 Codex 配置文件
@@ -63,10 +66,17 @@ Codex Desktop App / Codex CLI
 ~/.codex/config.toml
 ~/.codex/config.openai.toml
 ~/.codex/config.deepseek.toml
+~/.codex/codex-providers.yml
 ~/Documents/ai_tools/moon-bridge/config.yml
 ```
 
 如果你的目录不同，需要修改 `scripts/codex-toggle` 中对应变量。
+
+如果要使用自定义 provider registry，需要安装 `yq`：
+
+```bash
+brew install yq
+```
 
 ## 安装
 
@@ -101,12 +111,13 @@ codex-toggle status
 
 ## 配置文件约定
 
-脚本默认使用三份 Codex 配置文件：
+脚本默认使用这些 Codex 配置文件：
 
 ```text
 ~/.codex/config.toml
 ~/.codex/config.openai.toml
 ~/.codex/config.deepseek.toml
+~/.codex/codex-providers.yml
 ```
 
 含义如下：
@@ -116,8 +127,21 @@ codex-toggle status
 | `config.toml` | Codex 当前实际生效配置 |
 | `config.openai.toml` | OpenAI / GPT 配置基线 |
 | `config.deepseek.toml` | DeepSeek / Moon Bridge 配置基线 |
+| `codex-providers.yml` | 可选的 provider / model 注册表 |
 
-切换时，脚本会把对应基线文件复制到 `config.toml`。
+切换时，脚本会把对应 provider 的基线文件复制到 `config.toml`，必要时再修改顶层 `model` 字段。
+
+如果 `codex-providers.yml` 不存在，脚本会使用内置默认注册表，旧命令仍然可用。创建可编辑注册表：
+
+```bash
+codex-toggle init-config
+```
+
+也可以参考：
+
+```text
+examples/codex-providers.example.yml
+```
 
 ## 命令说明
 
@@ -184,6 +208,26 @@ codex-toggle restart-app
 codex-toggle doctor
 ```
 
+列出 provider / model：
+
+```bash
+codex-toggle list
+```
+
+按模型或 alias 切换：
+
+```bash
+codex-toggle use deepseek-pro
+codex-toggle use deepseek-v4-flash
+```
+
+只切换 provider 基线配置：
+
+```bash
+codex-toggle provider openai
+codex-toggle provider moonbridge
+```
+
 查看 Moon Bridge 日志：
 
 ```bash
@@ -194,6 +238,12 @@ codex-toggle logs 50
 
 ```bash
 codex-toggle sync-deepseek
+```
+
+通用同步命令：
+
+```bash
+codex-toggle sync moonbridge
 ```
 
 ## 推荐使用方式
