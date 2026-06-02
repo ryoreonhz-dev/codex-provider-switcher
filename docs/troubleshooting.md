@@ -11,8 +11,10 @@ codex-toggle doctor
 This checks:
 
 - Active Codex config
+- Provider registry and `yq` availability
 - OpenAI baseline config
 - DeepSeek baseline config
+- Registered provider config files
 - Moon Bridge directory
 - Moon Bridge config
 - Moon Bridge process status
@@ -28,18 +30,36 @@ codex-toggle status
 Expected OpenAI mode:
 
 ```text
-Current model path: OpenAI / GPT
-Moon Bridge: stopped
+Current provider: OpenAI / GPT
+Current model: gpt-*
+Moon Bridge:
+  Status: stopped
 ```
 
 Expected DeepSeek mode:
 
 ```text
-Current model path: DeepSeek / Moon Bridge
-Moon Bridge: running
+Current provider: Moon Bridge
+Current model: deepseek-v4-flash
+Moon Bridge:
+  Status: running
 model_provider = "moonbridge"
 base_url = "http://127.0.0.1:38440/v1"
 ```
+
+## Verify Registered Models
+
+```bash
+codex-toggle list
+```
+
+If `~/.codex/codex-providers.yml` exists, `codex-toggle` requires `yq` v4 to parse it:
+
+```bash
+brew install yq
+```
+
+Without a custom registry file, the script uses built-in defaults for OpenAI and Moon Bridge / DeepSeek.
 
 ## Verify Actual DeepSeek Model
 
@@ -99,6 +119,8 @@ This can happen with custom providers. Use explicit script commands instead:
 ```bash
 codex-toggle deepseek-pro
 codex-toggle deepseek-flash
+codex-toggle use deepseek-v4-pro
+codex-toggle use deepseek-flash
 ```
 
 Then check `~/.codex/config.toml`:
@@ -122,6 +144,29 @@ codex-toggle sync-deepseek
 ```
 
 This copies `~/.codex/config.toml` to `~/.codex/config.deepseek.toml` after confirming the active config is DeepSeek / Moon Bridge.
+
+The generic form is:
+
+```bash
+codex-toggle sync moonbridge
+```
+
+## Custom Registry Exists But Commands Fail
+
+If `~/.codex/codex-providers.yml` exists, install `yq` v4:
+
+```bash
+brew install yq
+codex-toggle doctor
+```
+
+You can create the default registry with:
+
+```bash
+codex-toggle init-config
+```
+
+Use `examples/codex-providers.example.yml` as the schema reference.
 
 ## Moon Bridge Path Is Different
 

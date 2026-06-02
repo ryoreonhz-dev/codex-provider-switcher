@@ -1,0 +1,31 @@
+providers:
+  openai:
+    label: "OpenAI / GPT"
+    config: "config.openai.toml"
+    codex_provider: ""
+    service: ""
+
+  moonbridge:
+    label: "Moon Bridge"
+    config: "config.deepseek.toml"
+    codex_provider: "moonbridge"
+    service: "moonbridge"
+
+models:
+  deepseek-v4-pro:
+    label: "DeepSeek V4 Pro"
+    provider: "moonbridge"
+    model: "deepseek-v4-pro"
+    aliases: ["deepseek-pro"]
+
+  deepseek-v4-flash:
+    label: "DeepSeek V4 Flash"
+    provider: "moonbridge"
+    model: "deepseek-v4-flash"
+    aliases: ["deepseek-flash"]
+
+  moonbridge:
+    label: "Moon Bridge Default"
+    provider: "moonbridge"
+    model: "moonbridge"
+    aliases: ["deepseek"]
